@@ -167,6 +167,18 @@ export function IssueDetail() {
               {issue.replyMessage.content}
             </Descriptions.Item>
           </Descriptions>
+        ) : issue.status === 'REPLIED' && issue.suggestedReply ? (
+          <Descriptions column={1}>
+            <Descriptions.Item label="回覆者">
+              <Tag color="blue">Bot</Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="時間">
+              {issue.repliedAt ? new Date(issue.repliedAt).toLocaleString() : '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="內容">
+              {issue.suggestedReply}
+            </Descriptions.Item>
+          </Descriptions>
         ) : (
           <p>尚無回覆</p>
         )}

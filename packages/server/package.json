@@ -1,5 +1,5 @@
 {
-  "name": "@line-monitor/server",
+  "name": "@channel-observer/server",
   "version": "1.0.0",
   "private": true,
   "type": "module",

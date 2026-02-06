@@ -163,7 +163,12 @@ export function IssueList() {
       title: '回覆者',
       dataIndex: 'repliedBy',
       key: 'repliedBy',
-      render: (member) => member?.displayName || '-',
+      render: (member, record) => {
+        if (member?.displayName) return member.displayName
+        // 如果狀態是已回覆但沒有回覆者，表示是 Bot 回覆
+        if (record.status === 'REPLIED' && !member) return 'Bot'
+        return '-'
+      },
     },
     {
       title: '回覆分數',

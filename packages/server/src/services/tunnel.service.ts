@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from 'child_process'
+import { spawn, ChildProcess, execSync } from 'child_process'
 import { logger } from '../utils/logger.js'
 
 interface TunnelStatus {
@@ -16,11 +16,38 @@ class TunnelService {
   private outputBuffer: string = ''
 
   /**
+   * 檢查系統中是否有 cloudflared tunnel 進程在運行
+   */
+  private checkSystemProcess(): boolean {
+    try {
+      const result = execSync('pgrep -f "cloudflared tunnel"', { encoding: 'utf-8' })
+      return result.trim().length > 0
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 殺死所有系統中的 cloudflared tunnel 進程
+   */
+  private killAllTunnelProcesses(): void {
+    try {
+      execSync('pkill -f "cloudflared tunnel"', { encoding: 'utf-8' })
+      logger.info('Killed all existing cloudflared tunnel processes')
+    } catch {
+      // 沒有進程時 pkill 會返回非零狀態碼，忽略錯誤
+    }
+  }
+
+  /**
    * 獲取當前 tunnel 狀態
    */
   getStatus(): TunnelStatus {
+    const hasSystemProcess = this.checkSystemProcess()
+    const isRunning = (this.process !== null && !this.process.killed) || hasSystemProcess
+
     return {
-      isRunning: this.process !== null && !this.process.killed,
+      isRunning,
       url: this.url,
       startedAt: this.startedAt,
       error: this.error,
@@ -38,10 +65,11 @@ class TunnelService {
    * 啟動 cloudflare tunnel
    */
   async start(port: number = 3000): Promise<{ success: boolean; url?: string; error?: string }> {
-    // 如果已經運行，先停止
-    if (this.process && !this.process.killed) {
-      await this.stop()
-    }
+    // 先清理所有現有的 cloudflared tunnel 進程（包括遺留的）
+    this.killAllTunnelProcesses()
+
+    // 等待進程完全結束
+    await new Promise(resolve => setTimeout(resolve, 1000))
 
     return new Promise((resolve) => {
       try {
@@ -106,6 +134,7 @@ class TunnelService {
    * 停止 tunnel
    */
   async stop(): Promise<{ success: boolean }> {
+    // 先嘗試優雅地停止自己管理的進程
     if (this.process && !this.process.killed) {
       this.process.kill('SIGTERM')
 
@@ -116,7 +145,7 @@ class TunnelService {
             this.process.kill('SIGKILL')
           }
           resolve()
-        }, 5000)
+        }, 3000)
 
         this.process?.on('exit', () => {
           clearTimeout(timeout)
@@ -124,6 +153,12 @@ class TunnelService {
         })
       })
     }
+
+    // 清理所有系統中的 cloudflared tunnel 進程（包括遺留的）
+    this.killAllTunnelProcesses()
+
+    // 等待進程完全結束
+    await new Promise(resolve => setTimeout(resolve, 500))
 
     this.process = null
     this.url = null

@@ -122,7 +122,7 @@ export function Layout() {
           }}
         >
           <h2 style={{ margin: 0, fontSize: collapsed ? 14 : 16 }}>
-            {collapsed ? 'LINE' : 'LINE 監控系統'}
+            {collapsed ? '觀察者' : '渠道觀察者'}
           </h2>
         </div>
         <Menu

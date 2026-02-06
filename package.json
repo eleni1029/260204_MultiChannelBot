@@ -1,8 +1,8 @@
 {
-  "name": "line-service-monitor",
+  "name": "channel-observer",
   "version": "1.0.0",
   "private": true,
-  "description": "LINE 群聊監控與客服管理系統",
+  "description": "渠道觀察者 - 多渠道客服管理系統",
   "workspaces": [
     "packages/*"
   ],

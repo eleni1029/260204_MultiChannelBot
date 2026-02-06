@@ -176,13 +176,14 @@ export function Dashboard() {
       </Row>
 
       <Card title="系統說明" style={{ marginTop: 24 }}>
-        <p>歡迎使用 LINE 群聊監控與客服管理系統。</p>
+        <p>歡迎使用渠道觀察者 - 多渠道客服管理系統。</p>
         <ul>
-          <li><strong>客戶管理</strong>：管理客戶資訊並綁定 LINE 群聊</li>
-          <li><strong>群聊管理</strong>：查看由 Webhook 自動建立的群聊記錄</li>
+          <li><strong>客戶管理</strong>：管理客戶資訊並綁定對話</li>
+          <li><strong>對話管理</strong>：查看由 Webhook 自動建立的對話記錄</li>
           <li><strong>人員管理</strong>：標記群組成員角色（員工/外部人員）</li>
           <li><strong>訊息記錄</strong>：搜尋與查看所有訊息</li>
           <li><strong>問題追蹤</strong>：追蹤客戶問題與回覆狀態</li>
+          <li><strong>知識庫</strong>：管理自動回覆的知識條目</li>
           <li><strong>執行分析</strong>：手動觸發 AI 分析訊息</li>
         </ul>
       </Card>

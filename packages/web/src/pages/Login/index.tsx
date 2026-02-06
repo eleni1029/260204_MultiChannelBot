@@ -44,7 +44,7 @@ export function Login() {
         background: '#f0f2f5',
       }}
     >
-      <Card title="LINE 群聊監控系統" style={{ width: 400 }}>
+      <Card title="渠道觀察者" style={{ width: 400 }}>
         <Form name="login" onFinish={onFinish} autoComplete="off">
           <Form.Item name="username" rules={[{ required: true, message: '請輸入帳號' }]}>
             <Input prefix={<UserOutlined />} placeholder="帳號" size="large" />
