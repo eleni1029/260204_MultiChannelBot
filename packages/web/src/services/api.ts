@@ -262,6 +262,7 @@ export const settingsApi = {
   getOAuthStatus: () => api.get<OAuthStatusResponse>('/settings/oauth/status'),
   checkOAuthProvider: (provider: string) => api.get<OAuthStatus>(`/settings/oauth/status/${provider}`),
   checkFeishuStatus: () => api.get<ChannelStatus>('/settings/channels/feishu/status'),
+  checkLineStatus: () => api.get<ChannelStatus>('/settings/channels/line/status'),
 }
 
 // Analysis API
@@ -438,12 +439,19 @@ export const knowledgeApi = {
 }
 
 // Tunnel API
+export type TunnelMode = 'quick' | 'fixed'
+
 export interface TunnelStatus {
   isRunning: boolean
   url: string | null
   webhookUrl: string | null
   startedAt: string | null
   error: string | null
+  mode: TunnelMode
+  hasToken: boolean
+  customDomain: string
+  customWebhookUrls: { line: string; feishu: string } | null
+  lastQuickUrl: string | null
 }
 
 export interface TunnelHealth {
@@ -454,8 +462,12 @@ export interface TunnelHealth {
 
 export const tunnelApi = {
   status: () => api.get<TunnelStatus>('/tunnel/status'),
-  start: () => api.post<{ success: boolean; url?: string; webhookUrl?: string; error?: string }>('/tunnel/start'),
+  start: () => api.post<{ success: boolean; url?: string; webhookUrl?: string; error?: string; mode?: TunnelMode }>('/tunnel/start'),
   stop: () => api.post<{ success: boolean }>('/tunnel/stop'),
   restart: () => api.post<{ success: boolean; url?: string; webhookUrl?: string; error?: string }>('/tunnel/restart'),
   health: () => api.get<TunnelHealth>('/tunnel/health'),
+  updateCustomDomain: (domain: string) =>
+    api.put<{ customDomain: string; customWebhookUrls: { line: string; feishu: string } | null }>('/tunnel/custom-domain', { domain }),
+  updateMode: (mode: TunnelMode, token?: string) =>
+    api.put<{ mode: TunnelMode }>('/tunnel/mode', { mode, token }),
 }

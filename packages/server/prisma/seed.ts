@@ -136,6 +136,9 @@ async function main() {
     { key: 'bot.notFoundReply', value: '抱歉，我目前無法回答這個問題。請稍候，會有專人為您服務。', description: '無法回答時的回覆內容' },
     { key: 'bot.name', value: '', description: 'Bot 名稱（多個名稱用逗號分隔，提及名稱時會強制回覆）' },
     { key: 'bot.confidenceThreshold', value: '50', description: '自動回覆信心度閾值（0-100）' },
+    { key: 'webhook.customDomain', value: '', description: '自訂固定域名（例如 https://bot.example.com）' },
+    { key: 'tunnel.mode', value: 'fixed', description: 'Tunnel 模式 (quick/fixed)' },
+    { key: 'tunnel.cloudflareToken', value: '', description: 'Cloudflare Tunnel Token（Fixed 模式使用）' },
   ]
 
   for (const setting of defaultSettings) {

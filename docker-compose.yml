@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: line-monitor-db
     environment:
       POSTGRES_USER: postgres
@@ -25,6 +23,39 @@ services:
       - "8080:8080"
     depends_on:
       - postgres
+
+  server:
+    build:
+      context: .
+      dockerfile: packages/server/Dockerfile
+    container_name: line-monitor-server
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/line_monitor?schema=public
+      PORT: 3000
+      HOST: 0.0.0.0
+    env_file:
+      - path: packages/server/.env
+        required: false
+    volumes:
+      - ${HOME}/.gemini:/root/.gemini
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: packages/web/Dockerfile
+    container_name: line-monitor-web
+    ports:
+      - "80:80"
+      - "5173:80"
+    depends_on:
+      - server
+    restart: unless-stopped
 
 volumes:
   postgres_data:

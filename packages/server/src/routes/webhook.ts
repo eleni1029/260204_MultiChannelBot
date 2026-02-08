@@ -38,18 +38,29 @@ function extractNameFromMessage(content: string): string | null {
 }
 
 export const webhookRoutes: FastifyPluginAsync = async (app) => {
+  // 使用 raw body 進行 LINE 簽名驗證
+  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
+    ;(req as any).rawBody = body
+    try {
+      const json = JSON.parse(body.toString())
+      done(null, json)
+    } catch (err) {
+      done(err as Error, undefined)
+    }
+  })
+
   // LINE Webhook
   app.post('/line', async (request, reply) => {
     const signature = request.headers['x-line-signature'] as string
 
-    logger.info({ signature: signature ? 'present' : 'missing', body: request.body }, 'Webhook received')
+    logger.info({ signature: signature ? 'present' : 'missing' }, 'Webhook received')
 
     if (!signature) {
       return reply.status(400).send({ error: 'Missing signature' })
     }
 
     try {
-      const body = JSON.stringify(request.body)
+      const body = (request as any).rawBody.toString()
       const isValid = await validateSignature(body, signature)
 
       if (!isValid) {
@@ -197,6 +208,15 @@ async function handleMessageEvent(event: MessageEvent) {
     case 'location':
       messageType = MessageType.LOCATION
       break
+  }
+
+  // 防止重複訊息（LINE 可能重送）
+  const existing = await prisma.message.findUnique({
+    where: { lineMessageId: message.id },
+  })
+  if (existing) {
+    logger.info({ lineMessageId: message.id }, 'Duplicate message, skipping')
+    return
   }
 
   const savedMessage = await prisma.message.create({

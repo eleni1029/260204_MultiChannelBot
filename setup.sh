@@ -1,20 +1,13 @@
 #!/bin/bash
 
-# LINE 群聊監控系統 - 一鍵部署腳本
+# 渠道觀察者 - 一鍵部署腳本
 # 使用方式: ./setup.sh
 
 set -e
 
 echo "=========================================="
-echo " LINE 群聊監控系統 - 本地部署"
+echo " 渠道觀察者 - Docker 部署"
 echo "=========================================="
-
-# 檢查 Node.js
-if ! command -v node &> /dev/null; then
-    echo "❌ 請先安裝 Node.js (v18+)"
-    exit 1
-fi
-echo "✅ Node.js: $(node -v)"
 
 # 檢查 Docker
 if ! command -v docker &> /dev/null; then
@@ -23,57 +16,41 @@ if ! command -v docker &> /dev/null; then
 fi
 echo "✅ Docker: $(docker -v | cut -d' ' -f3)"
 
-# 1. 安裝依賴
-echo ""
-echo "📦 安裝專案依賴..."
-npm install
-
-# 2. 啟動 PostgreSQL
-echo ""
-echo "🐘 啟動 PostgreSQL..."
-docker compose up -d postgres
-
-# 等待資料庫就緒
-echo "⏳ 等待資料庫就緒..."
-sleep 5
-until docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; do
-    sleep 1
-done
-echo "✅ PostgreSQL 已就緒"
-
-# 3. 設定環境變數
-echo ""
-echo "⚙️  設定環境變數..."
+# 檢查 .env 檔案
 if [ ! -f packages/server/.env ]; then
+    echo "⚙️  建立預設 .env 檔案..."
     cp packages/server/.env.example packages/server/.env
-    echo "✅ 已建立 .env 檔案"
+    echo "✅ 已建立 packages/server/.env，請根據需求修改設定"
 else
-    echo "ℹ️  .env 檔案已存在"
+    echo "ℹ️  packages/server/.env 已存在"
 fi
 
-# 4. 資料庫遷移
+# 啟動所有服務
 echo ""
-echo "🗄️  執行資料庫遷移..."
-npm run db:migrate
+echo "🚀 建構並啟動所有服務..."
+docker compose up --build -d
 
-# 5. 初始化資料
 echo ""
-echo "🌱 初始化資料..."
-npm run db:seed
+echo "⏳ 等待服務啟動..."
+sleep 10
 
 echo ""
 echo "=========================================="
 echo " ✅ 部署完成！"
 echo "=========================================="
 echo ""
-echo "啟動服務："
-echo "  npm run dev"
-echo ""
 echo "服務位址："
-echo "  前端: http://localhost:5173"
-echo "  後端: http://localhost:3000"
+echo "  前端:    http://localhost:5173"
+echo "  後端:    http://localhost:3000"
+echo "  Adminer: http://localhost:8080"
 echo ""
 echo "預設帳號："
 echo "  帳號: admin"
 echo "  密碼: admin123"
+echo ""
+echo "常用指令："
+echo "  查看狀態:  docker compose ps"
+echo "  查看日誌:  docker compose logs -f"
+echo "  停止服務:  docker compose down"
+echo "  重新建構:  docker compose up --build -d"
 echo ""

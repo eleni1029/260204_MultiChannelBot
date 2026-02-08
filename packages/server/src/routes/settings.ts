@@ -235,6 +235,40 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
     }
   )
 
+  // 檢查 LINE 連接狀態
+  app.get(
+    '/channels/line/status',
+    { preHandler: [authenticate, requirePermission('setting.view')] },
+    async () => {
+      const settings = await getSettings()
+      const hasSecret = !!(settings['line.channelSecret'] && settings['line.channelSecret'].length >= 20)
+      const hasToken = !!(settings['line.channelAccessToken'] && settings['line.channelAccessToken'].length > 0)
+
+      if (!hasSecret && !hasToken) {
+        return {
+          success: true,
+          data: { connected: false, message: 'LINE Channel Secret 和 Access Token 均未設定，無法收發訊息' },
+        }
+      }
+      if (!hasSecret) {
+        return {
+          success: true,
+          data: { connected: false, message: 'LINE Channel Secret 未設定，無法驗證 Webhook 請求' },
+        }
+      }
+      if (!hasToken) {
+        return {
+          success: true,
+          data: { connected: false, message: 'LINE Channel Access Token 未設定，無法回覆訊息' },
+        }
+      }
+      return {
+        success: true,
+        data: { connected: true, message: 'LINE 設定完成' },
+      }
+    }
+  )
+
   // 檢查飛書連接狀態
   app.get(
     '/channels/feishu/status',

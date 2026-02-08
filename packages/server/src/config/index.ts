@@ -26,6 +26,9 @@ const envSchema = z.object({
   HOST: z.string().default('0.0.0.0'),
   LINE_CHANNEL_SECRET: z.string().optional(),
   LINE_CHANNEL_ACCESS_TOKEN: z.string().optional(),
+  CLOUDFLARE_TUNNEL_TOKEN: z.string().optional(),
+  TUNNEL_MODE: z.enum(['quick', 'fixed']).optional(),
+  WEBHOOK_DOMAIN: z.string().optional(),
   AI_PROVIDER: z.enum(['gemini-oauth', 'claude-code-oauth', 'claude', 'gemini', 'ollama']).default('gemini-oauth'),
   CLAUDE_API_KEY: z.string().optional(),
   GEMINI_API_KEY: z.string().optional(),
@@ -45,6 +48,11 @@ export const config = {
   line: {
     channelSecret: env.LINE_CHANNEL_SECRET,
     channelAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN,
+  },
+  tunnel: {
+    cloudflareToken: env.CLOUDFLARE_TUNNEL_TOKEN,
+    mode: env.TUNNEL_MODE,
+    webhookDomain: env.WEBHOOK_DOMAIN,
   },
   ai: {
     provider: env.AI_PROVIDER,

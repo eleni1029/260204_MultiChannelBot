@@ -18,6 +18,9 @@ export class ClaudeProvider implements AIProvider {
     apiKey: string,
     private model: string
   ) {
+    if (apiKey.startsWith('sk-ant-oat')) {
+      throw new Error('Claude OAuth token (sk-ant-oat*) 不支援直接 API 調用。請使用一般 API Key (sk-ant-api*) 或改用其他 AI Provider。')
+    }
     this.client = new Anthropic({ apiKey })
   }
 

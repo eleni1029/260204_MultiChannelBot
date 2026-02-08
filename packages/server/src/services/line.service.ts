@@ -29,8 +29,8 @@ export async function getGroupMemberProfile(groupId: string, userId: string) {
 export async function validateSignature(body: string, signature: string): Promise<boolean> {
   const settings = await getSettings()
   const channelSecret = settings['line.channelSecret']
-  if (!channelSecret) {
-    throw new Error('LINE Channel Secret not configured')
+  if (!channelSecret || channelSecret.length < 20) {
+    throw new Error('LINE Channel Secret not configured or invalid')
   }
   return line.validateSignature(body, channelSecret, signature)
 }

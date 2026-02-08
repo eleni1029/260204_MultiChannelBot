@@ -14,6 +14,7 @@ import {
   Spin,
   Typography,
   Switch,
+  Segmented,
 } from 'antd'
 import {
   CheckCircleOutlined,
@@ -24,8 +25,9 @@ import {
   LinkOutlined,
   CloudOutlined,
   PoweroffOutlined,
+  SaveOutlined,
 } from '@ant-design/icons'
-import { settingsApi, tunnelApi, OAuthStatus, TunnelStatus, TunnelHealth, ChannelStatus } from '@/services/api'
+import { settingsApi, tunnelApi, OAuthStatus, TunnelStatus, TunnelHealth, ChannelStatus, TunnelMode } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
 
 const { Text, Paragraph } = Typography
@@ -41,8 +43,16 @@ export function Settings() {
   const [tunnelHealth, setTunnelHealth] = useState<TunnelHealth | null>(null)
   const [tunnelLoading, setTunnelLoading] = useState(false)
   const [tunnelActionLoading, setTunnelActionLoading] = useState(false)
+  const [lineStatus, setLineStatus] = useState<ChannelStatus | null>(null)
+  const [lineStatusLoading, setLineStatusLoading] = useState(false)
   const [feishuStatus, setFeishuStatus] = useState<ChannelStatus | null>(null)
   const [feishuLoading, setFeishuLoading] = useState(false)
+  const [customDomain, setCustomDomain] = useState('')
+  const [customDomainSaving, setCustomDomainSaving] = useState(false)
+  const [customWebhookUrls, setCustomWebhookUrls] = useState<{ line: string; feishu: string } | null>(null)
+  const [tunnelMode, setTunnelMode] = useState<TunnelMode>('fixed')
+  const [cloudflareToken, setCloudflareToken] = useState('')
+  const [modeSaving, setModeSaving] = useState(false)
   const hasPermission = useAuthStore((state) => state.hasPermission)
 
   const fetchData = async () => {
@@ -81,8 +91,15 @@ export function Settings() {
       const res = await tunnelApi.status()
       if (res.data) {
         setTunnelStatus(res.data)
+        // 載入模式
+        setTunnelMode((res.data.mode as TunnelMode) || 'fixed')
+        // 載入自訂域名資訊
+        if (res.data.customDomain) {
+          setCustomDomain(res.data.customDomain)
+        }
+        setCustomWebhookUrls(res.data.customWebhookUrls || null)
         // 如果 tunnel 正在運行，檢查健康狀態
-        if (res.data.isRunning && res.data.url) {
+        if (res.data.isRunning) {
           const healthRes = await tunnelApi.health()
           if (healthRes.data) {
             setTunnelHealth(healthRes.data)
@@ -153,6 +170,71 @@ export function Settings() {
     message.success('已複製到剪貼簿')
   }
 
+  const handleSaveCustomDomain = async () => {
+    const trimmed = customDomain.trim()
+    if (trimmed && !trimmed.startsWith('https://')) {
+      message.error('域名必須以 https:// 開頭')
+      return
+    }
+    if (trimmed.endsWith('/')) {
+      message.error('域名結尾不可以有 /')
+      return
+    }
+    setCustomDomainSaving(true)
+    try {
+      const res = await tunnelApi.updateCustomDomain(trimmed)
+      if (res.success && res.data) {
+        message.success('固定域名已儲存')
+        setCustomDomain(res.data.customDomain)
+        setCustomWebhookUrls(res.data.customWebhookUrls)
+      } else {
+        message.error((res.error as any)?.message || '儲存失敗')
+      }
+    } catch {
+      message.error('儲存失敗')
+    } finally {
+      setCustomDomainSaving(false)
+    }
+  }
+
+  const handleModeChange = async (newMode: TunnelMode) => {
+    setModeSaving(true)
+    try {
+      const res = await tunnelApi.updateMode(
+        newMode,
+        newMode === 'fixed' ? cloudflareToken : undefined
+      )
+      if (res.success) {
+        setTunnelMode(newMode)
+        const data = res.data as any
+        if (data?.started) {
+          message.success(`已切換至${newMode === 'fixed' ? '固定域名' : '快速隧道'}模式並啟動`)
+        } else {
+          message.warning(`已切換至${newMode === 'fixed' ? '固定域名' : '快速隧道'}模式，但啟動失敗: ${data?.error || '未知錯誤'}`)
+        }
+        fetchTunnelStatus()
+      }
+    } catch {
+      message.error('切換失敗')
+    } finally {
+      setModeSaving(false)
+    }
+  }
+
+  const fetchLineStatus = useCallback(async () => {
+    setLineStatusLoading(true)
+    try {
+      const res = await settingsApi.checkLineStatus()
+      if (res.data) {
+        setLineStatus(res.data)
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLineStatusLoading(false)
+    }
+  }, [])
+
   const fetchFeishuStatus = useCallback(async () => {
     setFeishuLoading(true)
     try {
@@ -171,8 +253,9 @@ export function Settings() {
     fetchData()
     fetchOAuthStatus()
     fetchTunnelStatus()
+    fetchLineStatus()
     fetchFeishuStatus()
-  }, [fetchOAuthStatus, fetchTunnelStatus, fetchFeishuStatus])
+  }, [fetchOAuthStatus, fetchTunnelStatus, fetchLineStatus, fetchFeishuStatus])
 
   const handleSave = async (values: Record<string, string>) => {
     setSaving(true)
@@ -195,6 +278,10 @@ export function Settings() {
         // 如果更改了 AI provider，重新檢查 OAuth 狀態
         if (filtered['ai.provider']) {
           fetchOAuthStatus()
+        }
+        // 如果更改了 LINE 設定，重新檢查連接狀態
+        if (filtered['line.channelSecret'] || filtered['line.channelAccessToken']) {
+          fetchLineStatus()
         }
         // 如果更改了飛書設定，重新檢查連接狀態
         if (filtered['feishu.appId'] || filtered['feishu.appSecret'] || filtered['feishu.enabled']) {
@@ -283,6 +370,28 @@ export function Settings() {
     <Card title="系統設定" loading={loading}>
       <Form form={form} layout="vertical" onFinish={handleSave} disabled={!hasPermission('setting.edit')}>
         <Divider orientation="left">LINE 設定</Divider>
+
+        {lineStatusLoading ? (
+          <Spin tip="檢查 LINE 連接狀態..." style={{ display: 'block', marginBottom: 16 }} />
+        ) : lineStatus && (
+          <Alert
+            type={lineStatus.connected ? 'success' : 'error'}
+            showIcon
+            icon={lineStatus.connected ? <CheckCircleOutlined /> : <CloseCircleOutlined />}
+            message={lineStatus.message}
+            action={
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                onClick={fetchLineStatus}
+              >
+                檢查狀態
+              </Button>
+            }
+            style={{ marginBottom: 16 }}
+          />
+        )}
+
         <Form.Item name="line.channelSecret" label="Channel Secret">
           <Input.Password placeholder="留空則不更新" />
         </Form.Item>
@@ -496,70 +605,140 @@ export function Settings() {
         <Divider orientation="left">
           <Space>
             <CloudOutlined />
-            Cloudflare Tunnel (Webhook)
+            Webhook 設定
           </Space>
         </Divider>
         <Alert
           icon={<LinkOutlined />}
           type="info"
           message="Webhook 連結管理"
-          description="使用 Cloudflare Tunnel 建立外部可訪問的 Webhook URL。每次重啟會獲得新的 URL，需要到 LINE Developers Console 更新 Webhook URL。"
+          description="透過 Cloudflare Tunnel 建立外部可訪問的 Webhook URL。可選擇「固定域名」（需 Cloudflare Tunnel Token）或「快速隧道」（每次重啟獲得新 URL）。"
           style={{ marginBottom: 16 }}
           showIcon
         />
 
-        {tunnelLoading ? (
-          <Spin tip="檢查 Tunnel 狀態..." style={{ display: 'block', marginBottom: 16 }} />
-        ) : (
-          <Card size="small" style={{ marginBottom: 16 }}>
-            <Space direction="vertical" style={{ width: '100%' }}>
-              <Space>
-                <Text strong>狀態：</Text>
-                {tunnelStatus?.isRunning ? (
-                  <Tag color="success" icon={<CheckCircleOutlined />}>運行中</Tag>
-                ) : (
-                  <Tag color="default" icon={<PoweroffOutlined />}>已停止</Tag>
-                )}
-                {tunnelHealth && (
-                  tunnelHealth.isValid ? (
-                    <Tag color="success">連線正常 ({tunnelHealth.latency}ms)</Tag>
-                  ) : (
-                    <Tag color="error">連線失敗: {tunnelHealth.error}</Tag>
-                  )
-                )}
-              </Space>
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Space>
+              <Text strong>模式：</Text>
+              <Segmented
+                value={tunnelMode}
+                options={[
+                  { value: 'fixed', label: '固定域名' },
+                  { value: 'quick', label: '快速隧道' },
+                ]}
+                onChange={(value) => handleModeChange(value as TunnelMode)}
+                disabled={modeSaving || !hasPermission('setting.edit')}
+              />
+              {modeSaving && <Spin size="small" />}
+            </Space>
 
-              {tunnelStatus?.webhookUrl && (
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  <Text strong>Webhook URL：</Text>
-                  <Space.Compact style={{ width: '100%' }}>
-                    <Input value={tunnelStatus.webhookUrl} readOnly style={{ fontFamily: 'monospace' }} />
-                    <Button icon={<CopyOutlined />} onClick={() => copyToClipboard(tunnelStatus.webhookUrl!)}>
-                      複製
-                    </Button>
-                  </Space.Compact>
-                  {tunnelStatus.startedAt && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      啟動時間：{new Date(tunnelStatus.startedAt).toLocaleString()}
-                    </Text>
+            <Divider style={{ margin: '12px 0' }} />
+
+            {tunnelLoading ? (
+              <Spin tip="檢查 Tunnel 狀態..." style={{ display: 'block' }} />
+            ) : tunnelMode === 'fixed' ? (
+              /* Fixed 模式 */
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Text strong>Cloudflare Tunnel Token：</Text>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Input.Password
+                    value={cloudflareToken}
+                    onChange={(e) => setCloudflareToken(e.target.value)}
+                    placeholder="輸入 Cloudflare Tunnel Token"
+                    style={{ fontFamily: 'monospace' }}
+                    disabled={!hasPermission('setting.edit')}
+                  />
+                  <Button
+                    icon={<SaveOutlined />}
+                    onClick={async () => {
+                      if (!cloudflareToken) {
+                        message.error('Token 不可為空')
+                        return
+                      }
+                      setModeSaving(true)
+                      try {
+                        await tunnelApi.updateMode('fixed', cloudflareToken)
+                        message.success('Token 已儲存')
+                      } catch {
+                        message.error('儲存失敗')
+                      } finally {
+                        setModeSaving(false)
+                      }
+                    }}
+                    loading={modeSaving}
+                    disabled={!hasPermission('setting.edit')}
+                  >
+                    儲存
+                  </Button>
+                </Space.Compact>
+                {tunnelStatus?.hasToken && !cloudflareToken && (
+                  <Text type="secondary" style={{ fontSize: 12 }}>Token 已設定（已隱藏）</Text>
+                )}
+
+                <Text strong style={{ marginTop: 8 }}>固定域名：</Text>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Input
+                    value={customDomain}
+                    onChange={(e) => setCustomDomain(e.target.value)}
+                    placeholder="https://bot.example.com"
+                    style={{ fontFamily: 'monospace' }}
+                    disabled={!hasPermission('setting.edit')}
+                  />
+                  <Button
+                    icon={<SaveOutlined />}
+                    onClick={handleSaveCustomDomain}
+                    loading={customDomainSaving}
+                    disabled={!hasPermission('setting.edit')}
+                  >
+                    儲存
+                  </Button>
+                </Space.Compact>
+
+                {customWebhookUrls && (
+                  <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
+                    <Text strong>LINE Webhook URL：</Text>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Input value={customWebhookUrls.line} readOnly style={{ fontFamily: 'monospace' }} />
+                      <Button icon={<CopyOutlined />} onClick={() => copyToClipboard(customWebhookUrls.line)}>
+                        複製
+                      </Button>
+                    </Space.Compact>
+
+                    <Text strong>飛書 Webhook URL：</Text>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Input value={customWebhookUrls.feishu} readOnly style={{ fontFamily: 'monospace' }} />
+                      <Button icon={<CopyOutlined />} onClick={() => copyToClipboard(customWebhookUrls.feishu)}>
+                        複製
+                      </Button>
+                    </Space.Compact>
+                  </Space>
+                )}
+
+                <Divider style={{ margin: '12px 0' }} />
+
+                <Space>
+                  <Text strong>狀態：</Text>
+                  {tunnelStatus?.isRunning ? (
+                    <Tag color="success" icon={<CheckCircleOutlined />}>運行中</Tag>
+                  ) : (
+                    <Tag color="default" icon={<PoweroffOutlined />}>已停止</Tag>
+                  )}
+                  {tunnelHealth && (
+                    tunnelHealth.isValid ? (
+                      <Tag color="success">連線正常 ({tunnelHealth.latency}ms)</Tag>
+                    ) : (
+                      <Tag color="error">連線失敗: {tunnelHealth.error}</Tag>
+                    )
                   )}
                 </Space>
-              )}
 
-              {tunnelStatus?.error && (
-                <Alert type="error" message={tunnelStatus.error} style={{ marginTop: 8 }} />
-              )}
+                {tunnelStatus?.error && (
+                  <Alert type="error" message={tunnelStatus.error} style={{ marginTop: 8 }} />
+                )}
 
-              <Space style={{ marginTop: 8 }}>
-                {tunnelStatus?.isRunning ? (
-                  <>
-                    <Button
-                      icon={<ReloadOutlined />}
-                      onClick={handleTunnelRestart}
-                      loading={tunnelActionLoading}
-                    >
-                      重新獲取 URL
-                    </Button>
+                <Space style={{ marginTop: 8 }}>
+                  {tunnelStatus?.isRunning ? (
                     <Button
                       danger
                       icon={<PoweroffOutlined />}
@@ -568,28 +747,129 @@ export function Settings() {
                     >
                       停止
                     </Button>
-                  </>
-                ) : (
+                  ) : (
+                    <Button
+                      type="primary"
+                      icon={<CloudOutlined />}
+                      onClick={handleTunnelStart}
+                      loading={tunnelActionLoading}
+                    >
+                      啟動 Tunnel
+                    </Button>
+                  )}
                   <Button
-                    type="primary"
-                    icon={<CloudOutlined />}
-                    onClick={handleTunnelStart}
-                    loading={tunnelActionLoading}
+                    icon={<ReloadOutlined />}
+                    onClick={fetchTunnelStatus}
+                    loading={tunnelLoading}
                   >
-                    啟動 Tunnel
+                    檢查狀態
                   </Button>
-                )}
-                <Button
-                  icon={<ReloadOutlined />}
-                  onClick={fetchTunnelStatus}
-                  loading={tunnelLoading}
-                >
-                  檢查狀態
-                </Button>
+                </Space>
               </Space>
-            </Space>
-          </Card>
-        )}
+            ) : (
+              /* Quick 模式 */
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Space>
+                  <Text strong>狀態：</Text>
+                  {tunnelStatus?.isRunning ? (
+                    <Tag color="success" icon={<CheckCircleOutlined />}>運行中</Tag>
+                  ) : (
+                    <Tag color="default" icon={<PoweroffOutlined />}>已停止</Tag>
+                  )}
+                  {tunnelHealth && (
+                    tunnelHealth.isValid ? (
+                      <Tag color="success">連線正常 ({tunnelHealth.latency}ms)</Tag>
+                    ) : (
+                      <Tag color="error">連線失敗: {tunnelHealth.error}</Tag>
+                    )
+                  )}
+                </Space>
+
+                {tunnelStatus?.webhookUrl ? (
+                  <Space direction="vertical" style={{ width: '100%' }}>
+                    <Text strong>Webhook URL：</Text>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Input value={tunnelStatus.webhookUrl} readOnly style={{ fontFamily: 'monospace' }} />
+                      <Button icon={<CopyOutlined />} onClick={() => copyToClipboard(tunnelStatus.webhookUrl!)}>
+                        複製
+                      </Button>
+                    </Space.Compact>
+                    {tunnelStatus.startedAt && (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        啟動時間：{new Date(tunnelStatus.startedAt).toLocaleString()}
+                      </Text>
+                    )}
+                  </Space>
+                ) : tunnelStatus?.lastQuickUrl && (
+                  <Space direction="vertical" style={{ width: '100%' }}>
+                    <Text strong>上次 Webhook URL：</Text>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Input
+                        value={`${tunnelStatus.lastQuickUrl}/api/webhook/line`}
+                        readOnly
+                        style={{ fontFamily: 'monospace', opacity: 0.6 }}
+                      />
+                      <Button icon={<CopyOutlined />} onClick={() => copyToClipboard(`${tunnelStatus.lastQuickUrl}/api/webhook/line`)}>
+                        複製
+                      </Button>
+                    </Space.Compact>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      上次使用的 URL（服務重啟後會自動重新建立隧道）
+                    </Text>
+                  </Space>
+                )}
+
+                {tunnelStatus?.error && (
+                  <Alert type="error" message={tunnelStatus.error} style={{ marginTop: 8 }} />
+                )}
+
+                <Space style={{ marginTop: 8 }}>
+                  {tunnelStatus?.isRunning ? (
+                    <>
+                      <Button
+                        icon={<ReloadOutlined />}
+                        onClick={handleTunnelRestart}
+                        loading={tunnelActionLoading}
+                      >
+                        重新獲取 URL
+                      </Button>
+                      <Button
+                        danger
+                        icon={<PoweroffOutlined />}
+                        onClick={handleTunnelStop}
+                        loading={tunnelActionLoading}
+                      >
+                        停止
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      type="primary"
+                      icon={<CloudOutlined />}
+                      onClick={handleTunnelStart}
+                      loading={tunnelActionLoading}
+                    >
+                      啟動 Tunnel
+                    </Button>
+                  )}
+                  <Button
+                    icon={<ReloadOutlined />}
+                    onClick={fetchTunnelStatus}
+                    loading={tunnelLoading}
+                  >
+                    檢查狀態
+                  </Button>
+                </Space>
+
+                <Alert
+                  type="info"
+                  message="快速隧道會在服務重啟時自動啟動。URL 可能會改變，系統會保存最近一次的 URL。"
+                  style={{ marginTop: 8 }}
+                />
+              </Space>
+            )}
+          </Space>
+        </Card>
 
         {hasPermission('setting.edit') && (
           <Form.Item>
