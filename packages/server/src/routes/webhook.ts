@@ -273,31 +273,145 @@ function checkBotNameMentioned(content: string, botName: string | null): boolean
 }
 
 /**
- * 使用 AI 分析訊息是否為問題
- * 中文表達方式複雜，必須用語言模型判斷
+ * 取得群組/私聊最近的對話記錄（含 bot 自動回覆）
+ * 將用戶訊息與 bot 回覆合併排序，讓 AI 能看到完整對話上下文
  */
-async function analyzeQuestionWithAI(content: string): Promise<{
-  isQuestion: boolean
+async function fetchRecentMessages(groupId: number, limit: number = 10) {
+  // 取得用戶訊息
+  const messages = await prisma.message.findMany({
+    where: {
+      groupId,
+      messageType: MessageType.TEXT,
+      content: { not: null },
+    },
+    include: {
+      member: { select: { displayName: true, lineUserId: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  })
+
+  // 取得同時間段內 bot 的自動回覆記錄（有回答的）
+  const oldestMessage = messages[messages.length - 1]
+  const botReplies = oldestMessage ? await prisma.autoReplyLog.findMany({
+    where: {
+      groupId,
+      matched: true,
+      answer: { not: null },
+      createdAt: { gte: oldestMessage.createdAt },
+    },
+    orderBy: { createdAt: 'asc' },
+  }) : []
+
+  // 合併用戶訊息與 bot 回覆，按時間排序
+  const combined: Array<{
+    sender: string | null
+    content: string
+    createdAt: Date
+    isBot: boolean
+  }> = []
+
+  for (const msg of messages) {
+    combined.push({
+      sender: msg.member?.displayName || msg.member?.lineUserId || null,
+      content: msg.content || '',
+      createdAt: msg.createdAt,
+      isBot: false,
+    })
+  }
+
+  const settings = await getSettings()
+  const botDisplayName = settings['bot.name']?.split(',')[0]?.trim() || '系統助手'
+
+  for (const reply of botReplies) {
+    if (reply.answer) {
+      combined.push({
+        sender: botDisplayName,
+        content: reply.answer,
+        createdAt: reply.createdAt,
+        isBot: true,
+      })
+    }
+  }
+
+  // 按時間排序（由舊到新），取最近 limit 條
+  combined.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+  return combined.slice(-limit)
+}
+
+/**
+ * 使用 AI 分析對話上下文，判斷是否存在未回答的問題
+ * 取代舊的 analyzeQuestionWithAI，改為回溯最近 10 則訊息綜合判斷
+ * 回傳所有未回答的問題列表，供後續整合回覆
+ */
+async function analyzeConversationWithAI(groupId: number): Promise<{
+  hasUnansweredQuestion: boolean
+  unansweredQuestions: string[]
   confidence: number
   summary: string
   sentiment: 'positive' | 'neutral' | 'negative'
 }> {
   try {
+    const recentMessages = await fetchRecentMessages(groupId, 10)
+
+    if (recentMessages.length === 0) {
+      return {
+        hasUnansweredQuestion: false,
+        unansweredQuestions: [],
+        confidence: 0,
+        summary: '',
+        sentiment: 'neutral',
+      }
+    }
+
+    const formatted = recentMessages.map(m => ({
+      sender: m.sender || '未知用戶',
+      content: m.content || '',
+      time: m.createdAt.toISOString().replace('T', ' ').substring(0, 19),
+    }))
+
     const ai = await getAIProvider()
-    const analysis = await ai.analyzeQuestion(content)
+    const analysis = await ai.analyzeConversation(formatted)
+
+    // 從 allQuestions 中提取所有未回答的問題
+    const unansweredQuestions = (analysis.allQuestions || [])
+      .filter(q => q.status === 'unanswered')
+      .map(q => q.question)
+
+    // 如果 allQuestions 沒有提供但 hasUnansweredQuestion 為 true，fallback 用 question 欄位
+    if (analysis.hasUnansweredQuestion && unansweredQuestions.length === 0 && analysis.question) {
+      unansweredQuestions.push(analysis.question)
+    }
+
+    // 正規化 confidence：AI 有時回傳 0~1 小數，有時回傳 0~100 整數
+    let confidence = analysis.confidence || 0
+    if (confidence > 0 && confidence <= 1) {
+      confidence = Math.round(confidence * 100)
+    }
+
+    logger.info({
+      hasUnansweredQuestion: analysis.hasUnansweredQuestion,
+      unansweredQuestions,
+      confidence,
+      rawConfidence: analysis.confidence,
+      allQuestions: analysis.allQuestions,
+    }, 'Conversation analysis result')
+
     return {
-      isQuestion: analysis.isQuestion,
-      confidence: analysis.confidence || 0,
-      summary: analysis.summary,
-      sentiment: analysis.sentiment,
+      hasUnansweredQuestion: analysis.hasUnansweredQuestion,
+      unansweredQuestions,
+      confidence,
+      summary: analysis.summary || '',
+      sentiment: analysis.sentiment || 'neutral',
     }
   } catch (err) {
-    logger.error(err, 'AI question analysis failed')
-    // AI 失敗時，保守地假設可能是問題（讓後續知識庫搜索決定）
+    logger.error(err, 'AI conversation analysis failed')
+    // AI 失敗時，保守地假設可能有未回答問題
     return {
-      isQuestion: true,
-      confidence: 50, // 中等信心度，讓知識庫搜索決定
-      summary: content.length > 100 ? content.substring(0, 100) + '...' : content,
+      hasUnansweredQuestion: true,
+      unansweredQuestions: [],
+      confidence: 50,
+      summary: '',
       sentiment: 'neutral',
     }
   }
@@ -390,24 +504,33 @@ async function handleAutoReply(
     const botNameMentioned = checkBotNameMentioned(question, botName)
 
     // Step 2: 決定是否需要處理這條訊息
-    // - 有關鍵字（Bot 名稱）：無論如何都要回應
-    // - 沒有關鍵字：用 AI 判斷是否為問題，信心度達標才處理
-    // 私聊 = 視同提及 Bot 名稱（強制處理和回覆）
+    // - 有關鍵字（Bot 名稱）或私聊：強制處理
+    // - 其他：用 AI 分析對話上下文，判斷是否有未回答問題
     let shouldProcess = botNameMentioned || isPrivateChat
     let isQuestion = false
     let questionConfidence = 0
     let questionSummary = question
     let sentiment: 'positive' | 'neutral' | 'negative' = 'neutral'
+    let extractedQuestion = question // 用於知識庫搜尋的問題文字
+
+    // 儲存所有未回答的問題（用於多問題整合回覆）
+    let unansweredQuestions: string[] = []
 
     if (!botNameMentioned && !isPrivateChat) {
-      // 沒有提及 Bot 名稱且非私聊，需要 AI 判斷是否為問題
-      const analysis = await analyzeQuestionWithAI(question)
-      isQuestion = analysis.isQuestion
+      // 沒有提及 Bot 名稱且非私聊，分析對話上下文
+      const analysis = await analyzeConversationWithAI(groupId)
+      isQuestion = analysis.hasUnansweredQuestion
       questionConfidence = analysis.confidence || 0
-      questionSummary = analysis.summary
+      questionSummary = analysis.summary || question
       sentiment = analysis.sentiment
+      unansweredQuestions = analysis.unansweredQuestions
 
-      // 只有當 AI 認為是問題且信心度達標時才處理
+      // 如果 AI 識別出未回答的問題，使用第一個問題作為主要搜尋文字
+      if (unansweredQuestions.length > 0 && unansweredQuestions[0]) {
+        extractedQuestion = unansweredQuestions[0]
+      }
+
+      // 只有當對話中有未回答問題且信心度達標時才處理
       shouldProcess = isQuestion && questionConfidence >= confidenceThreshold
     } else {
       // 提及 Bot 名稱或私聊，視為問題
@@ -422,6 +545,7 @@ async function handleAutoReply(
       confidenceThreshold,
       shouldProcess,
       autoReplyEnabled,
+      unansweredQuestions: unansweredQuestions.length > 0 ? unansweredQuestions : undefined,
     }, 'Message analysis result')
 
     // 如果自動回覆功能關閉
@@ -447,21 +571,51 @@ async function handleAutoReply(
     }
 
     // Step 3: 搜尋知識庫
-    const result = await searchKnowledge(question, groupId)
-    const knowledgeConfidence = result?.confidence || 0
-    const hasGoodMatch = result && knowledgeConfidence >= confidenceThreshold
+    // 如果有多個未回答問題，逐一搜尋並收集答案（最多處理 3 個，取最新的）
+    const questionsToSearch = unansweredQuestions.length > 1
+      ? unansweredQuestions.slice(-3)  // 取最後（最新）3 個
+      : [extractedQuestion]
+
+    const searchResults = await Promise.all(
+      questionsToSearch.map(q => searchKnowledge(q, groupId).then(r => ({ question: q, result: r })))
+    )
+
+    // 對每個問題分類：能回答 / 不能回答
+    const notFoundReply = settings['bot.notFoundReply'] || '抱歉，我目前無法回答這個問題。請稍候，會有專人為您服務。'
+    const answeredParts: Array<{ question: string, answer: string, knowledgeId: number | null, confidence: number }> = []
+    const unansweredParts: string[] = []
+
+    for (const sr of searchResults) {
+      const conf = sr.result?.confidence || 0
+      if (sr.result && conf >= confidenceThreshold) {
+        answeredParts.push({
+          question: sr.question,
+          answer: sr.result.generatedAnswer || sr.result.entry.answer,
+          knowledgeId: sr.result.entry.id,
+          confidence: conf,
+        })
+      } else {
+        unansweredParts.push(sr.question)
+      }
+    }
+
+    const bestConfidence = Math.max(...searchResults.map(sr => sr.result?.confidence || 0), 0)
+    const hasAnyAnswer = answeredParts.length > 0
 
     logger.info({
-      knowledgeConfidence,
+      questionsSearched: questionsToSearch.length,
+      answeredCount: answeredParts.length,
+      unansweredCount: unansweredParts.length,
+      bestConfidence,
       confidenceThreshold,
-      hasGoodMatch,
       botNameMentioned,
     }, 'Knowledge search result')
 
     // Step 4: 決定是否回覆
-    // - 有關鍵字：無論知識庫匹配如何都回覆（找不到就說找不到）
-    // - 無關鍵字但判定為問題：只有知識庫匹配好才回覆
-    const shouldReply = botNameMentioned || isPrivateChat || hasGoodMatch
+    // - 有能回答的問題 → 回覆（能答的答，不能答的提示）
+    // - 沒有能回答的 + 提及 Bot 名稱或私聊 → 回覆找不到
+    // - 沒有能回答的 + 一般群組 → 不回覆
+    const shouldReply = hasAnyAnswer || botNameMentioned || isPrivateChat
     let didReply = false
     let replyAnswer: string | null = null
 
@@ -469,17 +623,37 @@ async function handleAutoReply(
       isQuestion,
       botNameMentioned,
       shouldReply,
-      hasGoodMatch,
-      knowledgeConfidence,
+      hasAnyAnswer,
+      bestConfidence,
       confidenceThreshold,
     }, 'Reply decision')
 
     if (shouldReply) {
       const replyToken = event.replyToken
       if (replyToken) {
-        if (hasGoodMatch && result) {
-          // 知識庫匹配良好：使用知識庫答案
-          replyAnswer = result.generatedAnswer || result.entry.answer
+        if (hasAnyAnswer) {
+          // 組合回覆：能回答的給答案，不能回答的給提示
+          const totalQuestions = answeredParts.length + unansweredParts.length
+          const isMultiQuestion = totalQuestions > 1
+
+          if (isMultiQuestion) {
+            // 多個問題：逐一列出
+            const parts: string[] = []
+            let idx = 1
+            for (const ap of answeredParts) {
+              parts.push(`【問題${idx}】${ap.question}\n${ap.answer}`)
+              idx++
+            }
+            for (const uq of unansweredParts) {
+              parts.push(`【問題${idx}】${uq}\n${notFoundReply}`)
+              idx++
+            }
+            replyAnswer = parts.join('\n\n')
+          } else {
+            // 單一問題且有答案
+            replyAnswer = answeredParts[0]!.answer
+          }
+
           await replyMessage(replyToken, replyAnswer)
           didReply = true
 
@@ -487,35 +661,21 @@ async function handleAutoReply(
             messageId,
             groupId,
             memberId,
-            question,
+            question: questionsToSearch.join(' | '),
             answer: replyAnswer,
-            knowledgeId: result.entry.id,
+            knowledgeId: answeredParts[0]!.knowledgeId,
             matched: true,
-            confidence: knowledgeConfidence,
+            confidence: bestConfidence,
           })
 
-          logger.info({ knowledgeId: result.entry.id, knowledgeConfidence }, 'Auto reply sent (good knowledge match)')
-        } else if ((botNameMentioned || isPrivateChat) && result) {
-          // 提及名稱或私聊 + 有部分匹配結果
-          replyAnswer = result.generatedAnswer || result.entry.answer
-          await replyMessage(replyToken, replyAnswer)
-          didReply = true
-
-          await logAutoReply({
-            messageId,
-            groupId,
-            memberId,
-            question,
-            answer: replyAnswer,
-            knowledgeId: result.entry.id,
-            matched: true,
-            confidence: knowledgeConfidence,
-          })
-
-          logger.info({ knowledgeConfidence, botNameMentioned, isPrivateChat }, 'Auto reply sent (forced reply, partial match)')
+          logger.info({
+            answeredCount: answeredParts.length,
+            unansweredCount: unansweredParts.length,
+            totalQuestions,
+            bestConfidence,
+          }, 'Auto reply sent (knowledge match)')
         } else if (botNameMentioned || isPrivateChat) {
-          // 提及名稱或私聊但完全沒有匹配，回覆找不到答案
-          const notFoundReply = settings['bot.notFoundReply'] || '抱歉，我目前無法回答這個問題。請稍候，會有專人為您服務。'
+          // 提及名稱或私聊但全部問題都沒有匹配
           await replyMessage(replyToken, notFoundReply)
           replyAnswer = notFoundReply
           didReply = true
@@ -531,7 +691,7 @@ async function handleAutoReply(
             confidence: 0,
           })
 
-          logger.info({ botNameMentioned: true }, 'Auto reply sent (bot name mentioned, no match)')
+          logger.info({ botNameMentioned, isPrivateChat }, 'Auto reply sent (forced reply, no match)')
         }
       }
     } else {
@@ -542,12 +702,12 @@ async function handleAutoReply(
         memberId,
         question,
         answer: null,
-        knowledgeId: result?.entry.id || null,
+        knowledgeId: null,
         matched: false,
-        confidence: knowledgeConfidence,
+        confidence: bestConfidence,
       })
 
-      logger.info({ knowledgeConfidence, questionConfidence }, 'Question detected but no good knowledge match, not replying')
+      logger.info({ bestConfidence, questionConfidence }, 'Question detected but no good knowledge match, not replying')
     }
 
     // Step 5: 如果是問題，創建 Issue 進行追蹤

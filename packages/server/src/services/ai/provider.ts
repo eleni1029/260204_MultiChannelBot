@@ -56,6 +56,21 @@ export interface GenerateAnswerResult {
   canAnswer: boolean        // 是否能基於知識庫回答
 }
 
+export interface ConversationQuestionStatus {
+  question: string
+  status: 'unanswered' | 'answered' | 'abandoned'
+  answeredBy: string | null
+}
+
+export interface ConversationAnalysis {
+  hasUnansweredQuestion: boolean
+  question: string                        // 最新的未回答問題
+  allQuestions: ConversationQuestionStatus[] // 所有識別到的問題及狀態
+  confidence: number                      // 0-100
+  summary: string                         // 對話摘要
+  sentiment: 'positive' | 'neutral' | 'negative'
+}
+
 export interface AIProvider {
   /**
    * 通用文字生成（用於自定義 prompt）
@@ -100,4 +115,9 @@ export interface AIProvider {
    * 分析客戶整體情緒
    */
   analyzeCustomerSentiment(recentMessages: string[]): Promise<CustomerSentimentAnalysis>
+
+  /**
+   * 分析對話上下文，判斷是否存在未回答的問題
+   */
+  analyzeConversation(messages: Array<{ sender: string, content: string, time: string }>): Promise<ConversationAnalysis>
 }

@@ -8,6 +8,7 @@ import type {
   RAGSearchResult,
   RAGAnswerResult,
   GenerateAnswerResult,
+  ConversationAnalysis,
 } from './provider.js'
 import { promises as fs } from 'fs'
 import { homedir } from 'os'
@@ -406,7 +407,10 @@ ${context}
 要求：
 - 只用知識庫資訊，不編造
 - 回答簡潔，適合 LINE 聊天
-- 如果無法回答，canAnswer 設為 false
+- 必須直接回答問題，給出具體的解答內容
+- 絕對不要反問用戶、不要列出問題清單讓用戶選擇
+- 如果問題太模糊無法具體回答，或知識庫中沒有對應答案，canAnswer 設為 false
+- 不要把知識庫的標題/問題列表當作回答內容
 
 JSON回覆：{"canAnswer":bool,"answer":"回答","confidence":0-100,"usedKnowledge":[編號]}
 只回覆JSON。`
@@ -493,6 +497,52 @@ ${reply}`
 新標籤：${newTag}
 現有標籤：${existingTags.join(', ')}`
 
+    const result = await this.callGemini(prompt)
+    return JSON.parse(this.extractJSON(result))
+  }
+
+  private buildConversationAnalysisPrompt(messages: Array<{ sender: string, content: string, time: string }>): string {
+    const formatted = messages.map(m => `[${m.time}] ${m.sender}: ${m.content}`).join('\n')
+    return `分析以下對話記錄，判斷是否存在未回答的問題。請按照以下步驟逐一分析，以 JSON 格式回覆：
+
+步驟：
+1. 從對話記錄中識別出所有被提出的問題
+2. 對每個問題，檢查後續對話中是否有人已經回答（其他成員的回覆、提問者自行解決、或提問者表示不需要了）
+3. 排除已回答、已解決、或提問者已放棄的問題
+4. 判斷是否仍有未回答的問題，如有多個未回答問題，取最新的一個
+
+回覆格式：
+{
+  "hasUnansweredQuestion": boolean,
+  "question": string,
+  "allQuestions": [
+    {
+      "question": string,
+      "status": "unanswered" | "answered" | "abandoned",
+      "answeredBy": string | null
+    }
+  ],
+  "confidence": number,  // 0-100 的整數，例如 85 表示高信心
+  "summary": string,
+  "sentiment": "positive" | "neutral" | "negative"
+}
+
+判斷標準：
+- 直接提問（怎麼做？如何？為什麼？）視為問題
+- 間接請求幫助（我想知道...、可以告訴我...、幫我...）視為問題
+- 如果有人回覆了該問題的相關答案 → status: "answered"
+- 如果提問者轉移話題、說「沒事了」「好的謝謝」等 → status: "abandoned"
+- 如果問題後續沒有任何相關回覆 → status: "unanswered"
+- 閒聊、打招呼、陳述句不算問題
+
+只回覆 JSON，不要其他文字。
+
+對話記錄（由舊到新）：
+${formatted}`
+  }
+
+  async analyzeConversation(messages: Array<{ sender: string, content: string, time: string }>): Promise<ConversationAnalysis> {
+    const prompt = this.buildConversationAnalysisPrompt(messages)
     const result = await this.callGemini(prompt)
     return JSON.parse(this.extractJSON(result))
   }

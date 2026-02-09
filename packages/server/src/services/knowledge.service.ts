@@ -149,6 +149,22 @@ export async function answerQuestion(query: string, groupId?: number): Promise<A
     // Step 3: 使用 AI 基於知識庫生成回答
     const result = await generateAnswerWithFallback(query, entriesToUse)
 
+    // 安全檢查：偵測 AI 是否回了「問題清單」而非答案
+    // 如果回答中問號數量 >= 3，很可能是在列舉問題反問用戶
+    if (result.canAnswer && result.answer) {
+      const questionMarkCount = (result.answer.match(/？|\?/g) || []).length
+      const bulletCount = (result.answer.match(/•|·/g) || []).length
+      if (questionMarkCount >= 3 || bulletCount >= 5) {
+        console.warn('AI answer rejected: looks like a question list', {
+          questionMarkCount,
+          bulletCount,
+          answerPreview: result.answer.substring(0, 200),
+        })
+        result.canAnswer = false
+        result.confidence = 0
+      }
+    }
+
     console.log('AI Answer Result:', {
       canAnswer: result.canAnswer,
       confidence: result.confidence,

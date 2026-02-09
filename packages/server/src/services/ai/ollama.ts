@@ -8,6 +8,7 @@ import type {
   RAGSearchResult,
   RAGAnswerResult,
   GenerateAnswerResult,
+  ConversationAnalysis,
 } from './provider.js'
 
 export class OllamaProvider implements AIProvider {
@@ -99,7 +100,8 @@ JSON：{"answer": string, "confidence": number, "usedKnowledge": number[]}`)
       `【${i + 1}】${e.question}: ${e.answer.substring(0, 300)}`
     ).join('\n')
 
-    const result = await this.generate(`根據知識庫回答問題。如果無法回答，canAnswer 設為 false。
+    const result = await this.generate(`根據知識庫回答問題。
+要求：必須直接回答，不要反問用戶，不要列出問題清單。如果問題太模糊或無法回答，canAnswer 設為 false。
 問題：${query}
 知識庫：${context}
 
@@ -180,6 +182,49 @@ ${reply}`)
 現有標籤：${existingTags.join(', ')}`)
 
     return JSON.parse(response.replace(/```json\n?|\n?```/g, ''))
+  }
+
+  async analyzeConversation(messages: Array<{ sender: string, content: string, time: string }>): Promise<ConversationAnalysis> {
+    const formatted = messages.map(m => `[${m.time}] ${m.sender}: ${m.content}`).join('\n')
+    const prompt = `分析以下對話記錄，判斷是否存在未回答的問題。請按照以下步驟逐一分析，以 JSON 格式回覆：
+
+步驟：
+1. 從對話記錄中識別出所有被提出的問題
+2. 對每個問題，檢查後續對話中是否有人已經回答（其他成員的回覆、提問者自行解決、或提問者表示不需要了）
+3. 排除已回答、已解決、或提問者已放棄的問題
+4. 判斷是否仍有未回答的問題，如有多個未回答問題，取最新的一個
+
+回覆格式：
+{
+  "hasUnansweredQuestion": boolean,
+  "question": string,
+  "allQuestions": [
+    {
+      "question": string,
+      "status": "unanswered" | "answered" | "abandoned",
+      "answeredBy": string | null
+    }
+  ],
+  "confidence": number,  // 0-100 的整數，例如 85 表示高信心
+  "summary": string,
+  "sentiment": "positive" | "neutral" | "negative"
+}
+
+判斷標準：
+- 直接提問（怎麼做？如何？為什麼？）視為問題
+- 間接請求幫助（我想知道...、可以告訴我...、幫我...）視為問題
+- 如果有人回覆了該問題的相關答案 → status: "answered"
+- 如果提問者轉移話題、說「沒事了」「好的謝謝」等 → status: "abandoned"
+- 如果問題後續沒有任何相關回覆 → status: "unanswered"
+- 閒聊、打招呼、陳述句不算問題
+
+只回覆 JSON，不要其他文字。
+
+對話記錄（由舊到新）：
+${formatted}`
+
+    const response = await this.generate(prompt)
+    return JSON.parse(this.extractJSON(response))
   }
 
   async analyzeCustomerSentiment(recentMessages: string[]): Promise<CustomerSentimentAnalysis> {
